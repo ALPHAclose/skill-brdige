@@ -1,0 +1,63 @@
+type AnalyticsType {
+  id: ID!
+  courseId: ID
+  userId: String
+  eventType: String!
+  metadata: JSON
+  createdAt: DateTime!
+}
+
+type CourseType {
+  id: ID!
+  title: String!
+  description: String
+  instructorId: String!
+  isPublished: Boolean!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  enrollments: [EnrollmentType!]!
+}
+
+"""Date with time (isoformat)"""
+scalar DateTime
+
+type EnrollmentType {
+  id: ID!
+  courseId: ID!
+  userId: String!
+  enrolledAt: DateTime!
+}
+
+"""
+The `JSON` scalar type represents JSON values as specified by [ECMA-404](https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf).
+"""
+scalar JSON @specifiedBy(url: "https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf")
+
+type Mutation {
+  createCourse(title: String!, description: String = null): CourseType!
+  updateCourse(id: ID!, title: String = null, description: String = null): CourseType!
+  deleteCourse(id: ID!): Boolean!
+  publishCourse(id: ID!, publish: Boolean!): CourseType!
+  enrollCourse(courseId: ID!): EnrollmentType!
+  trackEvent(courseId: ID, eventType: String!, metadata: JSON = null): AnalyticsType!
+  generateReport(courseId: ID!, title: String!): ReportType!
+  deleteReport(id: ID!): Boolean!
+}
+
+type Query {
+  courses: [CourseType!]!
+  course(id: ID!): CourseType
+  myCourses: [CourseType!]!
+  courseAnalytics(courseId: ID!): [AnalyticsType!]!
+  reports: [ReportType!]!
+  report(id: ID!): ReportType
+}
+
+type ReportType {
+  id: ID!
+  title: String!
+  courseId: ID!
+  generatedBy: String!
+  data: JSON!
+  createdAt: DateTime!
+}

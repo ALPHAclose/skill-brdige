@@ -1,0 +1,244 @@
+name: skillbridge
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  skillbridge-network:
+    driver: bridge
+
+volumes:
+  postgres_auth_data:
+  postgres_courses_data:
+  redis_data:
+  gateway_node_modules:
+  server1_node_modules:
+  frontend_node_modules:
+  frontend_next_cache:
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: skillbridge_redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - skillbridge-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  postgres_auth:
+    image: postgres:15-alpine
+    container_name: skillbridge_postgres_auth
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_AUTH_DB:?POSTGRES_AUTH_DB is required}
+      POSTGRES_USER: ${POSTGRES_AUTH_USER:?POSTGRES_AUTH_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_AUTH_PASSWORD:?POSTGRES_AUTH_PASSWORD is required}
+    ports:
+      - "${POSTGRES_AUTH_PORT:-5432}:5432"
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+      - ./scripts/init-auth-db.sql:/docker-entrypoint-initdb.d/01-init-auth-db.sql:ro
+    networks:
+      - skillbridge-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  postgres_courses:
+    image: postgres:15-alpine
+    container_name: skillbridge_postgres_courses
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_COURSES_DB:?POSTGRES_COURSES_DB is required}
+      POSTGRES_USER: ${POSTGRES_COURSES_USER:?POSTGRES_COURSES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_COURSES_PASSWORD:?POSTGRES_COURSES_PASSWORD is required}
+    ports:
+      - "${POSTGRES_COURSES_PORT:-5433}:5432"
+    volumes:
+      - postgres_courses_data:/var/lib/postgresql/data
+      - ./scripts/init-courses-db.sql:/docker-entrypoint-initdb.d/01-init-courses-db.sql:ro
+    networks:
+      - skillbridge-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  server1:
+    profiles:
+      - app
+    build:
+      context: ./server1
+      dockerfile: Dockerfile
+      target: development
+    container_name: skillbridge_server1
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: ${SERVER1_PORT:-5001}
+      DATABASE_URL: postgresql://${POSTGRES_AUTH_USER}:${POSTGRES_AUTH_PASSWORD}@postgres_auth:5432/${POSTGRES_AUTH_DB}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      CORS_ORIGIN: ${FRONTEND_PUBLIC_URL:-http://localhost:3000}
+      LOG_FORMAT: ${SERVER1_LOG_FORMAT:-dev}
+      TRUSTED_GATEWAY_HEADER: ${TRUSTED_GATEWAY_HEADER:-x-skillbridge-gateway}
+      TRUSTED_GATEWAY_SECRET: ${TRUSTED_GATEWAY_SECRET:?TRUSTED_GATEWAY_SECRET is required}
+    expose:
+      - "${SERVER1_PORT:-5001}"
+    volumes:
+      - ./server1:/app
+      - server1_node_modules:/app/node_modules
+    networks:
+      - skillbridge-network
+    depends_on:
+      postgres_auth:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${SERVER1_PORT:-5001}/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  server2:
+    profiles:
+      - app
+    build:
+      context: ./server2
+      dockerfile: Dockerfile
+      target: development
+    container_name: skillbridge_server2
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: development
+      PORT: ${SERVER2_PORT:-5002}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_COURSES_USER}:${POSTGRES_COURSES_PASSWORD}@postgres_courses:5432/${POSTGRES_COURSES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CORS_ORIGIN: ${FRONTEND_PUBLIC_URL:-http://localhost:3000}
+      TRUSTED_GATEWAY_HEADER: ${TRUSTED_GATEWAY_HEADER:-x-skillbridge-gateway}
+      TRUSTED_GATEWAY_SECRET: ${TRUSTED_GATEWAY_SECRET:?TRUSTED_GATEWAY_SECRET is required}
+    expose:
+      - "${SERVER2_PORT:-5002}"
+    volumes:
+      - ./server2:/app
+    networks:
+      - skillbridge-network
+    depends_on:
+      postgres_courses:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${SERVER2_PORT:-5002}/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  gateway:
+    profiles:
+      - app
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+      target: development
+    container_name: skillbridge_gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: ${GATEWAY_PORT:-4000}
+      SERVER1_URL: http://server1:${SERVER1_PORT:-5001}
+      SERVER2_URL: http://server2:${SERVER2_PORT:-5002}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      CORS_ORIGIN: ${FRONTEND_PUBLIC_URL:-http://localhost:3000}
+      RATE_LIMIT_WINDOW_MS: ${GATEWAY_RATE_LIMIT_WINDOW_MS:-900000}
+      RATE_LIMIT_MAX: ${GATEWAY_RATE_LIMIT_MAX:-100}
+      LOG_FORMAT: ${GATEWAY_LOG_FORMAT:-dev}
+      TRUSTED_GATEWAY_HEADER: ${TRUSTED_GATEWAY_HEADER:-x-skillbridge-gateway}
+      TRUSTED_GATEWAY_SECRET: ${TRUSTED_GATEWAY_SECRET:?TRUSTED_GATEWAY_SECRET is required}
+    ports:
+      - "${GATEWAY_PORT:-4000}:4000"
+    volumes:
+      - ./gateway:/app
+      - gateway_node_modules:/app/node_modules
+    networks:
+      - skillbridge-network
+    depends_on:
+      server1:
+        condition: service_healthy
+      server2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${GATEWAY_PORT:-4000}/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  frontend:
+    profiles:
+      - app
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: skillbridge_frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-http://localhost:4000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next_cache:/app/.next
+    networks:
+      - skillbridge-network
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    logging: *default-logging
