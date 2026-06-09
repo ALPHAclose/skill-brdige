@@ -43,8 +43,8 @@ SkillBridge/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/ALPHAclose/skill-brdige-.git
-cd skill-brdige-
+git clone https://github.com/ALPHAclose/skill-brdige.git
+cd skill-brdige
 ```
 
 ### 2. Create the environment file
