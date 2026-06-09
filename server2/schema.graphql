@@ -40,7 +40,7 @@ type Mutation {
   publishCourse(id: ID!, publish: Boolean!): CourseType!
   enrollCourse(courseId: ID!): EnrollmentType!
   trackEvent(courseId: ID, eventType: String!, metadata: JSON = null): AnalyticsType!
-  generateReport(courseId: ID!, title: String!): ReportType!
+  generateReport(courseId: ID!, title: String!, content: String = null): ReportType!
   deleteReport(id: ID!): Boolean!
 }
 

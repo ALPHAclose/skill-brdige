@@ -5,9 +5,9 @@ import { BookOpen, CheckCircle2, Eye, Loader2, Plus, Radio, Send, ToggleLeft, To
 import { FormEvent, useMemo, useState } from "react";
 
 import { ApiError } from "@/lib/api-client";
-import { createCourse, enrollCourse, getCourses, getMyCourses, publishCourse, trackEvent } from "@/lib/graphql-client";
+import { createCourse, enrollCourse, getCourses, getMyCourses, getReports, publishCourse, trackEvent } from "@/lib/graphql-client";
 import { queryKeys } from "@/lib/query-keys";
-import type { Course } from "@/lib/types";
+import type { Course, Report } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -16,7 +16,9 @@ export default function CoursesPage() {
   const user = useAuthStore((state) => state.user);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const canCreate = user?.role === "ADMIN" || user?.role === "INSTRUCTOR";
+  const canViewReports = user?.role === "ADMIN" || user?.role === "INSTRUCTOR";
 
   const coursesQuery = useQuery({
     queryKey: queryKeys.courses,
@@ -28,13 +30,26 @@ export default function CoursesPage() {
     queryFn: getMyCourses
   });
 
+  const reportsQuery = useQuery({
+    queryKey: queryKeys.reports,
+    queryFn: getReports,
+    enabled: canViewReports
+  });
+
   const myCourseIds = useMemo(() => new Set(myCoursesQuery.data?.map((course) => course.id) ?? []), [myCoursesQuery.data]);
+  const reportsByCourseId = useMemo(() => {
+    return (reportsQuery.data ?? []).reduce<Record<string, Report[]>>((groups, report) => {
+      groups[report.courseId] = [...(groups[report.courseId] ?? []), report];
+      return groups;
+    }, {});
+  }, [reportsQuery.data]);
 
   const createMutation = useMutation({
     mutationFn: createCourse,
     onSuccess: async () => {
       setTitle("");
       setDescription("");
+      setActionMessage("Course created");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.courses }),
         queryClient.invalidateQueries({ queryKey: queryKeys.myCourses })
@@ -44,7 +59,8 @@ export default function CoursesPage() {
 
   const publishMutation = useMutation({
     mutationFn: publishCourse,
-    onSuccess: async () => {
+    onSuccess: async (course) => {
+      setActionMessage(course.isPublished ? "Course published" : "Course unpublished");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.courses }),
         queryClient.invalidateQueries({ queryKey: queryKeys.myCourses })
@@ -55,6 +71,7 @@ export default function CoursesPage() {
   const enrollMutation = useMutation({
     mutationFn: enrollCourse,
     onSuccess: async () => {
+      setActionMessage("Enrollment saved");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.courses }),
         queryClient.invalidateQueries({ queryKey: queryKeys.myCourses }),
@@ -64,7 +81,13 @@ export default function CoursesPage() {
   });
 
   const trackMutation = useMutation({
-    mutationFn: trackEvent
+    mutationFn: trackEvent,
+    onSuccess: async (_event, variables) => {
+      setActionMessage("Course view tracked");
+      if (variables.courseId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.courseAnalytics(variables.courseId) });
+      }
+    }
   });
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
@@ -132,6 +155,12 @@ export default function CoursesPage() {
 
       <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-4">
+          {actionMessage ? (
+            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              {actionMessage}
+            </p>
+          ) : null}
+
           {coursesQuery.isLoading ? (
             <LoadingPanel label="Loading courses" />
           ) : coursesQuery.isError ? (
@@ -142,8 +171,11 @@ export default function CoursesPage() {
                 key={course.id}
                 course={course}
                 isMine={myCourseIds.has(course.id)}
+                isEnrolled={course.enrollments.some((enrollment) => enrollment.userId === user?.id)}
                 canPublish={user?.role === "ADMIN" || course.instructorId === user?.id}
-                canEnroll={!myCourseIds.has(course.id)}
+                canEnroll={user?.role === "STUDENT" && course.isPublished && !course.enrollments.some((enrollment) => enrollment.userId === user?.id)}
+                reports={reportsByCourseId[course.id] ?? []}
+                showReports={canViewReports}
                 publishPending={publishMutation.isPending}
                 enrollPending={enrollMutation.isPending}
                 trackPending={trackMutation.isPending}
@@ -178,7 +210,10 @@ export default function CoursesPage() {
               {myCoursesQuery.data.map((course) => (
                 <div key={course.id} className="rounded-lg border border-zinc-200 p-3">
                   <p className="text-sm font-medium text-zinc-950">{course.title}</p>
-                  <p className="mt-1 text-xs text-zinc-500">{course.isPublished ? "Published" : "Draft"}</p>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    {course.isPublished ? "Published" : "Draft"}
+                    {canViewReports ? ` · ${reportsByCourseId[course.id]?.length ?? 0} reports` : ""}
+                  </p>
                 </div>
               ))}
             </div>
@@ -196,8 +231,11 @@ export default function CoursesPage() {
 function CourseItem({
   course,
   isMine,
+  isEnrolled,
   canPublish,
   canEnroll,
+  reports,
+  showReports,
   publishPending,
   enrollPending,
   trackPending,
@@ -207,8 +245,11 @@ function CourseItem({
 }: {
   course: Course;
   isMine: boolean;
+  isEnrolled: boolean;
   canPublish: boolean;
   canEnroll: boolean;
+  reports: Report[];
+  showReports: boolean;
   publishPending: boolean;
   enrollPending: boolean;
   trackPending: boolean;
@@ -231,11 +272,18 @@ function CourseItem({
                 Mine
               </span>
             ) : null}
+            {isEnrolled ? (
+              <span className="inline-flex items-center gap-1 rounded-md bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700">
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                Enrolled
+              </span>
+            ) : null}
           </div>
           <p className="mt-2 text-sm text-zinc-600">{course.description ?? "No description"}</p>
           <div className="mt-3 flex flex-wrap gap-3 text-xs text-zinc-500">
             <span>{course.enrollments.length} enrolled</span>
             <span>Created {formatDate(course.createdAt)}</span>
+            {showReports ? <span>{reports.length} reports</span> : null}
           </div>
         </div>
 
@@ -275,6 +323,24 @@ function CourseItem({
           ) : null}
         </div>
       </div>
+
+      {showReports && reports.length ? (
+        <div className="mt-4 border-t border-zinc-200 pt-4">
+          <p className="mb-2 text-sm font-semibold text-zinc-950">Reports for this course</p>
+          <div className="grid gap-2 md:grid-cols-2">
+            {reports.slice(0, 4).map((report) => {
+              const content = typeof report.data.content === "string" ? report.data.content : "";
+              return (
+                <div key={report.id} className="rounded-lg border border-zinc-200 p-3">
+                  <p className="text-sm font-medium text-zinc-950">{report.title}</p>
+                  {content ? <p className="mt-1 line-clamp-2 text-sm text-zinc-600">{content}</p> : null}
+                  <p className="mt-2 text-xs text-zinc-500">{formatDate(report.createdAt)}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }

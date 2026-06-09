@@ -133,6 +133,8 @@ class Mutation:
         user = info.context.get("user")
         if not user:
             raise Exception("Authentication required")
+        if user.role != "STUDENT":
+            raise Exception("Only students can enroll in courses")
 
         db = SessionLocal()
         try:
@@ -227,7 +229,7 @@ class Mutation:
             db.close()
 
     @strawberry.mutation
-    def generate_report(self, info: Info, course_id: strawberry.ID, title: str) -> ReportType:
+    def generate_report(self, info: Info, course_id: strawberry.ID, title: str, content: Optional[str] = None) -> ReportType:
         user = info.context.get("user")
         if not user:
             raise Exception("Authentication required")
@@ -249,6 +251,7 @@ class Mutation:
             report_data = {
                 "course_id": str(course_uuid),
                 "course_title": course.title,
+                "content": content or "",
                 "enrollment_count": enrollment_count,
                 "total_analytics_events": event_count,
                 "generated_at": str(uuid.uuid4()) # simple unique ID / timestamp

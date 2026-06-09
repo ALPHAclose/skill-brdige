@@ -1,11 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart3, FilePlus2, Loader2, Trash2 } from "lucide-react";
+import { BarChart3, FilePlus2, Loader2, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ApiError } from "@/lib/api-client";
-import { deleteReport, generateReport, getCourseAnalytics, getMyCourses, getReports } from "@/lib/graphql-client";
+import { deleteReport, generateReport, getCourseAnalytics, getMyCourses, getReports, trackEvent } from "@/lib/graphql-client";
 import { queryKeys } from "@/lib/query-keys";
 import type { AnalyticsEvent, Report } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
@@ -16,6 +16,8 @@ export default function ReportsPage() {
   const user = useAuthStore((state) => state.user);
   const [selectedCourseId, setSelectedCourseId] = useState("");
   const [reportTitle, setReportTitle] = useState("");
+  const [reportContent, setReportContent] = useState("");
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const canUseReports = user?.role === "ADMIN" || user?.role === "INSTRUCTOR";
 
   const coursesQuery = useQuery({
@@ -46,6 +48,8 @@ export default function ReportsPage() {
     mutationFn: generateReport,
     onSuccess: async () => {
       setReportTitle("");
+      setReportContent("");
+      setActionMessage("Report generated");
       await queryClient.invalidateQueries({ queryKey: queryKeys.reports });
     }
   });
@@ -53,7 +57,16 @@ export default function ReportsPage() {
   const deleteMutation = useMutation({
     mutationFn: deleteReport,
     onSuccess: async () => {
+      setActionMessage("Report deleted");
       await queryClient.invalidateQueries({ queryKey: queryKeys.reports });
+    }
+  });
+
+  const analysisMutation = useMutation({
+    mutationFn: trackEvent,
+    onSuccess: async () => {
+      setActionMessage("Analysis created");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.courseAnalytics(selectedCourseId || null) });
     }
   });
 
@@ -68,7 +81,8 @@ export default function ReportsPage() {
 
     generateMutation.mutate({
       courseId: selectedCourseId,
-      title: reportTitle.trim() || `${selectedCourse?.title ?? "Course"} report`
+      title: reportTitle.trim() || `${selectedCourse?.title ?? "Course"} report`,
+      content: reportContent.trim() || undefined
     });
   };
 
@@ -126,6 +140,17 @@ export default function ReportsPage() {
             />
           </label>
 
+          <label className="block lg:col-span-2">
+            <span className="mb-1.5 block text-sm font-medium text-zinc-700">Report content</span>
+            <textarea
+              value={reportContent}
+              onChange={(event) => setReportContent(event.target.value)}
+              rows={4}
+              placeholder="Write your report summary, recommendations, or notes for this course."
+              className="w-full resize-y rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            />
+          </label>
+
           <div className="flex items-end">
             <button
               type="submit"
@@ -138,6 +163,9 @@ export default function ReportsPage() {
           </div>
         </form>
 
+        {actionMessage ? (
+          <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{actionMessage}</p>
+        ) : null}
         <MutationMessage error={generateMutation.error} />
       </section>
 
@@ -167,9 +195,37 @@ export default function ReportsPage() {
         </div>
 
         <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-            <h2 className="text-base font-semibold text-zinc-950">Analytics</h2>
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+              <h2 className="text-base font-semibold text-zinc-950">Analytics</h2>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!selectedCourseId || analysisMutation.isPending}
+                onClick={() =>
+                  analysisMutation.mutate({
+                    courseId: selectedCourseId,
+                    eventType: "manual_analysis",
+                    metadata: { source: "reports", courseTitle: selectedCourse?.title ?? null }
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {analysisMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}
+                Make analysis
+              </button>
+              <button
+                type="button"
+                disabled={!selectedCourseId || analyticsQuery.isFetching}
+                onClick={() => void analyticsQuery.refetch()}
+                className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <RefreshCw className={analyticsQuery.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} aria-hidden="true" />
+                Refresh
+              </button>
+            </div>
           </div>
 
           {analyticsQuery.isLoading ? (
@@ -184,7 +240,7 @@ export default function ReportsPage() {
         </div>
       </section>
 
-      <MutationMessage error={deleteMutation.error} />
+      <MutationMessage error={deleteMutation.error ?? analysisMutation.error} />
     </div>
   );
 }
@@ -192,6 +248,7 @@ export default function ReportsPage() {
 function ReportItem({ report, deleting, onDelete }: { report: Report; deleting: boolean; onDelete: () => void }) {
   const enrollmentCount = numberValue(report.data.enrollment_count);
   const eventCount = numberValue(report.data.total_analytics_events);
+  const content = typeof report.data.content === "string" ? report.data.content : "";
 
   return (
     <article className="rounded-lg border border-zinc-200 p-4">
@@ -199,6 +256,7 @@ function ReportItem({ report, deleting, onDelete }: { report: Report; deleting: 
         <div>
           <p className="font-medium text-zinc-950">{report.title}</p>
           <p className="mt-1 text-sm text-zinc-600">{String(report.data.course_title ?? report.courseId)}</p>
+          {content ? <p className="mt-2 text-sm text-zinc-700">{content}</p> : null}
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
             <span>{enrollmentCount} enrollments</span>
             <span>{eventCount} events</span>
@@ -226,9 +284,26 @@ function AnalyticsList({ items }: { items: AnalyticsEvent[] }) {
     accumulator[item.eventType] = (accumulator[item.eventType] ?? 0) + 1;
     return accumulator;
   }, {});
+  const uniqueUsers = new Set(items.map((item) => item.userId).filter(Boolean)).size;
+  const latestEvent = [...items].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
 
   return (
     <div className="space-y-4">
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border border-zinc-200 p-3">
+          <p className="text-sm font-medium text-zinc-950">Total events</p>
+          <p className="mt-1 text-2xl font-semibold text-zinc-950">{items.length}</p>
+        </div>
+        <div className="rounded-lg border border-zinc-200 p-3">
+          <p className="text-sm font-medium text-zinc-950">Active users</p>
+          <p className="mt-1 text-2xl font-semibold text-zinc-950">{uniqueUsers}</p>
+        </div>
+        <div className="rounded-lg border border-zinc-200 p-3">
+          <p className="text-sm font-medium text-zinc-950">Latest</p>
+          <p className="mt-1 text-sm text-zinc-600">{latestEvent ? latestEvent.eventType : "None"}</p>
+        </div>
+      </div>
+
       <div className="grid gap-2 sm:grid-cols-2">
         {Object.entries(grouped).map(([eventType, count]) => (
           <div key={eventType} className="rounded-lg border border-zinc-200 p-3">

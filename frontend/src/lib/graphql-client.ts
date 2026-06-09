@@ -189,11 +189,11 @@ export async function getReports() {
   return data.reports;
 }
 
-export async function generateReport(input: { courseId: string; title: string }) {
-  const data = await graphqlRequest<{ generateReport: Report }, { courseId: string; title: string }>(
+export async function generateReport(input: { courseId: string; title: string; content?: string }) {
+  const data = await graphqlRequest<{ generateReport: Report }, { courseId: string; title: string; content?: string }>(
     `
-      mutation GenerateReport($courseId: ID!, $title: String!) {
-        generateReport(courseId: $courseId, title: $title) {
+      mutation GenerateReport($courseId: ID!, $title: String!, $content: String) {
+        generateReport(courseId: $courseId, title: $title, content: $content) {
           ${REPORT_FIELDS}
         }
       }
