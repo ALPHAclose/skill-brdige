@@ -14,8 +14,19 @@ class Query:
         db = SessionLocal()
         try:
             if user and user.role == "ADMIN":
+                # Admins see all courses
                 items = db.query(Course).all()
+            elif user and user.role == "INSTRUCTOR":
+                # Instructors see their own courses (published or not) + all published courses from others
+                from sqlalchemy import or_
+                items = db.query(Course).filter(
+                    or_(
+                        Course.instructor_id == user.id,  # Their own courses
+                        Course.is_published == True        # All published courses
+                    )
+                ).all()
             else:
+                # Students and unauthenticated users see only published courses
                 items = db.query(Course).filter(Course.is_published == True).all()
 
             return [
